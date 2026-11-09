@@ -77,7 +77,7 @@ Financial records and attachments are stored in IndexedDB on the device, without
 
 ## Release automation
 
-The `Validate and release` workflow validates pushes/PRs. Pushing a version tag such as `v0.1.0` runs validation, builds Windows and Android artifacts, and then creates a GitHub release with SHA-256 checksums. Publication waits for both builds to succeed. GitHub Actions must be enabled and allowed to write repository contents. Source archives are supplied by GitHub. See [release notes](RELEASE_NOTES.md) for signing and preview limitations.
+The `Validate and release` workflow validates pushes/PRs. Pushing a version tag such as `v0.1.1` runs validation, builds Windows and Android artifacts, and then creates a GitHub release with SHA-256 checksums. Publication waits for both builds to succeed. GitHub Actions must be enabled and allowed to write repository contents. Source archives are supplied by GitHub. See [release notes](RELEASE_NOTES.md) for signing and preview limitations.
 
 ## Licensing
 

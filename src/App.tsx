@@ -900,7 +900,7 @@ export default function App() {
               <section className="panel padded">
                 <h2>Desktop updates</h2>
                 <p>
-                  PrimeLedger 0.1.0 · Windows installers receive updates from
+                  PrimeLedger 0.1.1 · Windows installers receive updates from
                   GitHub Releases. You choose when to download and restart.
                   Android updates are installed manually.
                 </p>
@@ -1608,6 +1608,9 @@ function Chat({
               <input
                 type="checkbox"
                 checked={remember}
+                disabled={
+                  base !== providers[provider].base || provider === "custom"
+                }
                 onChange={(e) => setRemember(e.target.checked)}
               />{" "}
               Save with Windows credential encryption
