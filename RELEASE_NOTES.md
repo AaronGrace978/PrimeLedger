@@ -1,4 +1,4 @@
-PrimeLedger's first release: a local-first workspace for independent contractors.
+PrimeLedger's initial release series (0.1.2 fixes desktop logo navigation and preserves secure speech/AI access after in-page navigation): a local-first workspace for independent contractors.
 
 - Track 1099 contract payments, business expenses, and W-2 gross income.
 - Organize clients, contracts, deadlines, agreements, and receipt attachments.

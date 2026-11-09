@@ -28,10 +28,12 @@ const keyNames = new Set([
   "custom",
 ]);
 function trusted(event) {
+  const frameURL = new URL(event.senderFrame?.url || "about:blank");
+  frameURL.hash = "";
   if (
     event.sender !== window?.webContents ||
     event.senderFrame !== window.webContents.mainFrame ||
-    event.senderFrame.url !== entry
+    frameURL.href !== entry
   )
     throw Error("Untrusted caller.");
 }
@@ -227,7 +229,7 @@ app.whenReady().then(() => {
     window.webContents.once("did-finish-load", async () => {
       try {
         const result = await window.webContents.executeJavaScript(
-          `(async()=>{const voice=await window.desktop.speak('PrimeLedger is ready.');await new Promise((resolve,reject)=>{const audio=new Audio('data:audio/wav;base64,'+voice);audio.onloadeddata=resolve;audio.onerror=()=>reject(Error('Speech WAV could not load'));setTimeout(()=>reject(Error('Audio load timeout')),10000);audio.load();});return {title:document.title,bytes:voice.length,headings:document.body.innerText.includes('A clearer picture.')};})()`,
+          `(async()=>{let attempts=0;while(!document.querySelector('.brand')){if(++attempts>200)throw Error('Renderer readiness timeout');await new Promise(r=>setTimeout(r,50));}document.querySelector('.brand').click();await new Promise(r=>setTimeout(r,50));if(location.href.endsWith('#'))throw Error('Logo navigation changed the document URL');location.hash='smoke';await new Promise(r=>setTimeout(r,50));const voice=await window.desktop.speak('PrimeLedger is ready.');await new Promise((resolve,reject)=>{const audio=new Audio('data:audio/wav;base64,'+voice);audio.onloadeddata=resolve;audio.onerror=()=>reject(Error('Speech WAV could not load'));setTimeout(()=>reject(Error('Audio load timeout')),10000);audio.load();});return {title:document.title,bytes:voice.length,headings:document.body.innerText.includes('A clearer picture.')};})()`,
         );
         console.log(JSON.stringify(result));
         app.exit(result.headings && result.bytes > 1000 ? 0 : 1);

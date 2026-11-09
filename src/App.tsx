@@ -368,7 +368,14 @@ export default function App() {
   return (
     <div className="app">
       <aside className={nav ? "sidebar visible" : "sidebar"}>
-        <a className="brand" href="#" onClick={() => go("Overview")}>
+        <a
+          className="brand"
+          href="#"
+          onClick={(event) => {
+            event.preventDefault();
+            go("Overview");
+          }}
+        >
           <span className="brandmark">
             <Leaf size={22} />
           </span>
@@ -900,7 +907,7 @@ export default function App() {
               <section className="panel padded">
                 <h2>Desktop updates</h2>
                 <p>
-                  PrimeLedger 0.1.1 · Windows installers receive updates from
+                  PrimeLedger 0.1.2 · Windows installers receive updates from
                   GitHub Releases. You choose when to download and restart.
                   Android updates are installed manually.
                 </p>
@@ -970,7 +977,7 @@ export default function App() {
           >
             <div className="section-heading">
               <h2 id="dialog-title">
-                {editing ? "Edit" : "New"}{" "}
+                {editing?.id ? "Edit" : "New"}{" "}
                 {modal === "entry" ? "transaction" : modal}
               </h2>
               <button
