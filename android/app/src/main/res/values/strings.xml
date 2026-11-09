@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PrimeLedger</string>
+    <string name="title_activity_main">PrimeLedger</string>
+    <string name="package_name">com.primeledger.app</string>
+    <string name="custom_url_scheme">com.primeledger.app</string>
+</resources>
