@@ -5,6 +5,22 @@ import {
   type Screenshot,
 } from "./extraction";
 import {
+  appropriate,
+  categories,
+  extractPosting,
+  propose,
+  reserveChange,
+  withPostings,
+  type PostedLine,
+  type Proposal,
+} from "./harness";
+import {
+  readAssumptions,
+  snapshot,
+  wageBaseFor,
+  writeAssumptions,
+} from "./tax";
+import {
   useEffect,
   useRef,
   useState,
@@ -237,16 +253,22 @@ export default function App() {
     const s = (key: string) => String(f.get(key) || "").trim();
     try {
       if (modal === "entry") {
-        const entry: Entry = {
-          id: editing?.id || id(),
-          kind: s("kind") as Entry["kind"],
-          date: s("date"),
-          name: s("name"),
-          amount: cents(s("amount")),
-          category: s("category"),
-          contractId: s("contractId"),
-          note: s("note"),
-        };
+        const { line } = appropriate(
+          {
+            kind: s("kind"),
+            date: s("date"),
+            name: s("name"),
+            amount: s("amount"),
+            category: s("category"),
+            contractId: s("contractId"),
+            salesTax: s("salesTax"),
+            note: s("note"),
+          },
+          ledger,
+          today(),
+          "strict",
+        );
+        const entry: Entry = { ...line, id: editing?.id || id() };
         await commit({
           ...ledger,
           entries: [...ledger.entries.filter((e) => e.id !== entry.id), entry],
@@ -847,6 +869,16 @@ export default function App() {
             <Chat
               ledger={ledger}
               year={year}
+              onPost={async (lines) => {
+                await commit(
+                  withPostings(
+                    ledger,
+                    lines,
+                    lines.map(() => id()),
+                  ),
+                );
+                setNotice("Added to your ledger.");
+              }}
               onExtract={(draft, image) => {
                 open("entry", draft);
                 setPendingImage(image);
@@ -907,7 +939,7 @@ export default function App() {
               <section className="panel padded">
                 <h2>Desktop updates</h2>
                 <p>
-                  PrimeLedger 0.1.2 · Windows installers receive updates from
+                  PrimeLedger 0.1.3 · Windows installers receive updates from
                   GitHub Releases. You choose when to download and restart.
                   Android updates are installed manually.
                 </p>
@@ -990,200 +1022,224 @@ export default function App() {
               </button>
             </div>
             <form onSubmit={submit}>
-              {modal === "entry" && (
-                <>
-                  {pendingImage && (
-                    <div className="notice">
-                      AI suggestion: verify every field. {pendingImage.name}{" "}
-                      will be saved to Documents only when you save this
-                      transaction.
-                    </div>
-                  )}
-                  <Field label="Transaction type">
-                    <select
-                      name="kind"
-                      defaultValue={editing?.kind || "income"}
-                    >
-                      <option value="income">Contract payment · 1099</option>
-                      <option value="expense">Business expense</option>
-                      <option value="w2">W-2 gross income</option>
-                    </select>
-                  </Field>
-                  <Field label="Description">
-                    <input
-                      autoFocus
-                      required
-                      maxLength={200}
-                      name="name"
-                      defaultValue={editing?.name}
-                      placeholder="e.g. Website project · final payment"
-                    />
-                  </Field>
-                  <div className="form-row">
-                    <Field label="Amount (USD)">
-                      <input
-                        name="amount"
-                        required
-                        inputMode="decimal"
-                        defaultValue={
-                          editing ? String(editing.amount / 100) : ""
-                        }
-                        placeholder="0.00"
+              <div className="modal-body">
+                {modal === "entry" && (
+                  <>
+                    {pendingImage && (
+                      <div className="notice">
+                        AI suggestion: verify every field. {pendingImage.name}{" "}
+                        will be saved to Documents only when you save this
+                        transaction. The amount is the total you paid. Sales tax
+                        belongs in its own field when it is already inside that
+                        total.
+                      </div>
+                    )}
+                    {editing && !editing.id && editing.amount && (
+                      <ReserveNote
+                        ledger={ledger}
+                        year={year}
+                        lines={[
+                          {
+                            kind: editing.kind,
+                            date: editing.date,
+                            name: editing.name,
+                            amount: editing.amount,
+                            category: editing.category,
+                            contractId: editing.contractId || "",
+                            note: editing.note || "",
+                            ...(editing.salesTax
+                              ? { salesTax: editing.salesTax }
+                              : {}),
+                          },
+                        ]}
                       />
-                    </Field>
-                    <Field label="Date">
-                      <input
-                        name="date"
-                        type="date"
-                        required
-                        defaultValue={editing?.date || today()}
-                      />
-                    </Field>
-                  </div>
-                  <Field label="Category">
-                    <select
-                      name="category"
-                      defaultValue={editing?.category || "Contract work"}
-                    >
-                      {[
-                        "Contract work",
-                        "Salary / wages",
-                        "Software",
-                        "Equipment",
-                        "Supplies",
-                        "Travel",
-                        "Meals",
-                        "Insurance",
-                        "Professional services",
-                        "Office",
-                        "Other",
-                      ].map((c) => (
-                        <option key={c}>{c}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Linked contract">{contractSelect}</Field>
-                </>
-              )}
-              {modal === "contract" && (
-                <>
-                  <Field label="Project / agreement title">
-                    <input
-                      autoFocus
-                      name="title"
-                      required
-                      maxLength={200}
-                      defaultValue={editing?.title}
-                      placeholder="Brand strategy engagement"
-                    />
-                  </Field>
-                  <Field label="Client">
-                    <input
-                      name="client"
-                      required
-                      maxLength={200}
-                      defaultValue={editing?.client}
-                      placeholder="Client or organization"
-                    />
-                  </Field>
-                  <div className="form-row">
-                    <Field label="Agreed value (USD)">
-                      <input
-                        name="amount"
-                        required
-                        inputMode="decimal"
-                        defaultValue={
-                          editing ? String(editing.value / 100) : ""
-                        }
-                        placeholder="0.00"
-                      />
-                    </Field>
-                    <Field label="Due date">
-                      <input
-                        name="date"
-                        type="date"
-                        required
-                        defaultValue={editing?.due || today()}
-                      />
-                    </Field>
-                  </div>
-                  <Field label="Status">
-                    <select
-                      name="status"
-                      defaultValue={editing?.status || "Active"}
-                    >
-                      <option>Active</option>
-                      <option>Draft</option>
-                      <option>Completed</option>
-                    </select>
-                  </Field>
-                </>
-              )}
-              {modal === "document" && (
-                <>
-                  <Field label="Document title">
-                    <input
-                      autoFocus
-                      name="name"
-                      required
-                      maxLength={200}
-                      defaultValue={editing?.name}
-                      placeholder="Signed consulting agreement"
-                    />
-                  </Field>
-                  <div className="form-row">
-                    <Field label="Document type">
+                    )}
+                    <Field label="Transaction type">
                       <select
                         name="kind"
-                        defaultValue={editing?.kind || "Agreement"}
+                        defaultValue={editing?.kind || "income"}
                       >
-                        {[
-                          "Agreement",
-                          "Receipt",
-                          "1099",
-                          "W-2",
-                          "Invoice",
-                          "Other",
-                        ].map((k) => (
-                          <option key={k}>{k}</option>
+                        <option value="income">Contract payment · 1099</option>
+                        <option value="expense">Business expense</option>
+                        <option value="w2">W-2 gross income</option>
+                      </select>
+                    </Field>
+                    <Field label="Description">
+                      <input
+                        autoFocus
+                        required
+                        maxLength={200}
+                        name="name"
+                        defaultValue={editing?.name}
+                        placeholder="e.g. Website project · final payment"
+                      />
+                    </Field>
+                    <div className="form-row">
+                      <Field label="Amount (USD)">
+                        <input
+                          name="amount"
+                          required
+                          inputMode="decimal"
+                          defaultValue={
+                            editing ? String(editing.amount / 100) : ""
+                          }
+                          placeholder="0.00"
+                        />
+                      </Field>
+                      <Field label="Date">
+                        <input
+                          name="date"
+                          type="date"
+                          required
+                          defaultValue={editing?.date || today()}
+                        />
+                      </Field>
+                    </div>
+                    <Field label="Category">
+                      <select
+                        name="category"
+                        defaultValue={editing?.category || "Contract work"}
+                      >
+                        {categories.map((c) => (
+                          <option key={c}>{c}</option>
                         ))}
                       </select>
                     </Field>
-                    <Field label="Document date">
+                    <Field label="Sales tax included (USD)">
                       <input
-                        name="date"
-                        type="date"
-                        required
-                        defaultValue={editing?.date || today()}
+                        name="salesTax"
+                        inputMode="decimal"
+                        defaultValue={
+                          editing?.salesTax
+                            ? String(editing.salesTax / 100)
+                            : ""
+                        }
+                        placeholder="Already included in the amount"
                       />
                     </Field>
-                  </div>
-                  <Field label="Linked contract">{contractSelect}</Field>
-                  <Field label="Attachment · optional, up to 10 MB">
-                    <input type="file" name="file" />
-                    {editing?.fileName && (
-                      <small>
-                        Current: {editing.fileName}. Choose a file to replace
-                        it.
-                      </small>
-                    )}
-                  </Field>
-                </>
-              )}
-              <Field label="Notes">
-                <textarea
-                  name="note"
-                  rows={3}
-                  maxLength={10000}
-                  defaultValue={editing?.note}
-                  placeholder="The details you’ll want to remember…"
-                />
-              </Field>
-              {error && (
-                <p role="alert" className="error">
-                  {error}
-                </p>
-              )}
+                    <Field label="Linked contract">{contractSelect}</Field>
+                  </>
+                )}
+                {modal === "contract" && (
+                  <>
+                    <Field label="Project / agreement title">
+                      <input
+                        autoFocus
+                        name="title"
+                        required
+                        maxLength={200}
+                        defaultValue={editing?.title}
+                        placeholder="Brand strategy engagement"
+                      />
+                    </Field>
+                    <Field label="Client">
+                      <input
+                        name="client"
+                        required
+                        maxLength={200}
+                        defaultValue={editing?.client}
+                        placeholder="Client or organization"
+                      />
+                    </Field>
+                    <div className="form-row">
+                      <Field label="Agreed value (USD)">
+                        <input
+                          name="amount"
+                          required
+                          inputMode="decimal"
+                          defaultValue={
+                            editing ? String(editing.value / 100) : ""
+                          }
+                          placeholder="0.00"
+                        />
+                      </Field>
+                      <Field label="Due date">
+                        <input
+                          name="date"
+                          type="date"
+                          required
+                          defaultValue={editing?.due || today()}
+                        />
+                      </Field>
+                    </div>
+                    <Field label="Status">
+                      <select
+                        name="status"
+                        defaultValue={editing?.status || "Active"}
+                      >
+                        <option>Active</option>
+                        <option>Draft</option>
+                        <option>Completed</option>
+                      </select>
+                    </Field>
+                  </>
+                )}
+                {modal === "document" && (
+                  <>
+                    <Field label="Document title">
+                      <input
+                        autoFocus
+                        name="name"
+                        required
+                        maxLength={200}
+                        defaultValue={editing?.name}
+                        placeholder="Signed consulting agreement"
+                      />
+                    </Field>
+                    <div className="form-row">
+                      <Field label="Document type">
+                        <select
+                          name="kind"
+                          defaultValue={editing?.kind || "Agreement"}
+                        >
+                          {[
+                            "Agreement",
+                            "Receipt",
+                            "1099",
+                            "W-2",
+                            "Invoice",
+                            "Other",
+                          ].map((k) => (
+                            <option key={k}>{k}</option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="Document date">
+                        <input
+                          name="date"
+                          type="date"
+                          required
+                          defaultValue={editing?.date || today()}
+                        />
+                      </Field>
+                    </div>
+                    <Field label="Linked contract">{contractSelect}</Field>
+                    <Field label="Attachment · optional, up to 10 MB">
+                      <input type="file" name="file" />
+                      {editing?.fileName && (
+                        <small>
+                          Current: {editing.fileName}. Choose a file to replace
+                          it.
+                        </small>
+                      )}
+                    </Field>
+                  </>
+                )}
+                <Field label="Notes">
+                  <textarea
+                    name="note"
+                    rows={3}
+                    maxLength={10000}
+                    defaultValue={editing?.note}
+                    placeholder="The details you’ll want to remember…"
+                  />
+                </Field>
+                {error && (
+                  <p role="alert" className="error">
+                    {error}
+                  </p>
+                )}
+              </div>
               <div className="modal-actions">
                 <button
                   type="button"
@@ -1265,7 +1321,12 @@ function EntryTable({
                   </span>
                   <span>
                     <strong>{e.name}</strong>
-                    <small>{e.category}</small>
+                    <small>
+                      {e.category}
+                      {e.salesTax
+                        ? ` · incl. ${money(e.salesTax)} sales tax`
+                        : ""}
+                    </small>
                   </span>
                 </button>
               </td>
@@ -1310,19 +1371,15 @@ function TaxCalculator({
   wages: number;
   year: number;
 }) {
-  const [fed, setFed] = useState("22"),
-    [state, setState] = useState("5"),
-    [paid, setPaid] = useState("0"),
-    [base, setBase] = useState("");
+  const stored = readAssumptions();
+  const [fed, setFed] = useState(String(stored.federal)),
+    [state, setState] = useState(String(stored.state)),
+    [paid, setPaid] = useState(stored.paid ? String(stored.paid / 100) : "0"),
+    [base, setBase] = useState(
+      stored.wageBase ? String(stored.wageBase / 100) : "",
+    );
   const wageBase =
-    base ||
-    (
-      { 2024: "168600", 2025: "176100", 2026: "184500" } as Record<
-        number,
-        string
-      >
-    )[year] ||
-    "";
+    base || (wageBaseFor(year) ? String(wageBaseFor(year) / 100) : "");
   const valid =
     wageBase !== "" &&
     [fed, state, paid, wageBase].every(
@@ -1330,6 +1387,15 @@ function TaxCalculator({
     ) &&
     Number(fed) <= 50 &&
     Number(state) <= 30;
+  useEffect(() => {
+    if (!valid) return;
+    writeAssumptions({
+      federal: Number(fed),
+      state: Number(state),
+      paid: Math.round(Number(paid) * 100),
+      wageBase: base ? Math.round(Number(Number(base).toFixed(2)) * 100) : 0,
+    });
+  }, [fed, state, paid, base, valid]);
   const r = reserve(
     profit,
     wages,
@@ -1439,14 +1505,170 @@ function TaxCalculator({
     </div>
   );
 }
+function ChatSnapshot({ ledger, year }: { ledger: Ledger; year: number }) {
+  const current = snapshot(ledger, year, readAssumptions());
+  if (!current)
+    return (
+      <p className="chat-snapshot">
+        Set a Social Security wage base in the tax calculator to estimate the
+        reserve.
+      </p>
+    );
+  return (
+    <div className="chat-snapshot">
+      <span>Profit {money(current.profit)}</span>
+      <span>Set aside {money(current.remaining)}</span>
+      <span>Keep {money(current.keep)}</span>
+    </div>
+  );
+}
+function PostingCard({
+  ledger,
+  year,
+  proposal,
+  busy,
+  status,
+  onAdd,
+  onDismiss,
+}: {
+  ledger: Ledger;
+  year: number;
+  proposal: Proposal;
+  busy: boolean;
+  status?: "added" | "dismissed";
+  onAdd: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="posting">
+      <strong>{proposal.summary}</strong>
+      <ul>
+        {proposal.lines.map((line, n) => {
+          const contract = ledger.contracts.find(
+            (c) => c.id === line.contractId,
+          );
+          return (
+            <li key={n}>
+              <span>
+                <b>{line.name}</b>
+                <small>
+                  {line.kind === "expense"
+                    ? "Expense"
+                    : line.kind === "w2"
+                      ? "W-2 wages"
+                      : "Contract income"}
+                  {" · "}
+                  {line.category}
+                  {contract ? ` · ${contract.client} · ${contract.title}` : ""}
+                  {line.salesTax
+                    ? ` · sales tax ${money(line.salesTax)} included in the total`
+                    : ""}
+                  {" · "}
+                  {line.date}
+                </small>
+              </span>
+              <b>
+                {line.kind === "expense" ? "−" : "+"}
+                {money(line.amount)}
+              </b>
+            </li>
+          );
+        })}
+      </ul>
+      {!!proposal.warnings.length && status !== "added" && (
+        <ul className="posting-warnings">
+          {proposal.warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      )}
+      <ReserveNote
+        ledger={ledger}
+        year={year}
+        lines={status === "added" ? [] : proposal.lines}
+      />
+      {status === "added" && <p>Added to your ledger.</p>}
+      {status === "dismissed" && <p>Left out of the ledger.</p>}
+      {!status && (
+        <div className="button-row">
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={onAdd}
+          >
+            Add to ledger
+          </button>
+          <button
+            type="button"
+            className="text-button"
+            disabled={busy}
+            onClick={onDismiss}
+          >
+            Not now
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+function ReserveNote({
+  ledger,
+  year,
+  lines,
+}: {
+  ledger: Ledger;
+  year: number;
+  lines: PostedLine[];
+}) {
+  const assumptions = readAssumptions();
+  const current = snapshot(ledger, year, assumptions);
+  if (!current)
+    return (
+      <div className="reserve-note">
+        <p>
+          Set a Social Security wage base in the tax calculator to see what to
+          set aside.
+        </p>
+      </div>
+    );
+  const change = lines.length
+    ? reserveChange(ledger, year, assumptions, lines)
+    : null;
+  const shown = change?.after || current;
+  const owe = change ? change.after.remaining - change.before.remaining : 0;
+  const keep = change ? change.after.keep - change.before.keep : 0;
+  return (
+    <div className="reserve-note">
+      <p>
+        For {year}, set aside <strong>{money(shown.remaining)}</strong> and keep{" "}
+        <strong>{money(shown.keep)}</strong> of contract profit.
+        {change && owe > 0 && ` This adds about ${money(owe)} to the reserve.`}
+        {change &&
+          owe < 0 &&
+          ` This lowers the reserve by about ${money(-owe)}.`}
+        {change && keep > 0 && ` About ${money(keep)} more is yours to keep.`}
+        {change && keep < 0 && ` About ${money(-keep)} less is left to keep.`}
+      </p>
+      <small>
+        Self-employment {money(shown.se)} · income reserve{" "}
+        {money(shown.incomeTax)}. Uses your tax calculator assumptions (
+        {assumptions.federal}% federal, {assumptions.state}% state). This is a
+        savings estimate, not a tax return.
+      </small>
+    </div>
+  );
+}
 function Chat({
   ledger,
   year,
   onExtract,
+  onPost,
 }: {
   ledger: Ledger;
   year: number;
   onExtract: (entry: Omit<Entry, "id">, image: Screenshot) => void;
+  onPost: (lines: PostedLine[]) => Promise<void>;
 }) {
   const [provider, setProvider] = useState<Provider>("ollama"),
     [base, setBase] = useState(providers.ollama.base as string),
@@ -1458,7 +1680,8 @@ function Chat({
     [context, setContext] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
-    [remember, setRemember] = useState(false);
+    [remember, setRemember] = useState(false),
+    [handled, setHandled] = useState<Record<number, "added" | "dismissed">>({});
   const [image, setImage] = useState<Screenshot | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
@@ -1481,7 +1704,7 @@ function Chat({
       const result = answer(
         await request(visionSpec(provider, base, key, model, image)),
       );
-      const draft = parseExtraction(result, today());
+      const draft = parseExtraction(result, today(), ledger);
       onExtract(draft, image);
       setImage(null);
     } catch (e) {
@@ -1519,17 +1742,27 @@ function Chat({
       if (!key.trim()) throw Error("Enter an API key in the provider panel.");
       if (remember && window.desktop && base === providers[provider].base)
         await window.desktop.key(provider, key);
+      const assumptions = readAssumptions();
+      const current = snapshot(ledger, year, assumptions);
       const payload = context
         ? "User explicitly shared these records as JSON: " +
           JSON.stringify({
             year,
             totals: totals(ledger, year),
+            reserve: current && {
+              setAside: current.remaining,
+              keep: current.keep,
+              selfEmployment: current.se,
+              incomeReserve: current.incomeTax,
+              federalPercent: assumptions.federal,
+              statePercent: assumptions.state,
+            },
             contracts: ledger.contracts,
             documentNotes: ledger.documents.map(
               ({ data, fileName, mime, ...d }) => d,
             ),
           })
-        : "No workspace records shared.";
+        : "No workspace records shared. The on-screen reserve was not sent.";
       if (payload.length > 80000)
         throw Error(
           "Workspace context is too large. Turn off sharing and paste only the relevant details.",
@@ -1545,6 +1778,42 @@ function Chat({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  }
+  async function add(index: number, proposal: Proposal) {
+    setBusy(true);
+    setError("");
+    try {
+      await onPost(proposal.lines);
+      setHandled((h) => ({ ...h, [index]: "added" }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  function readReply(content: string) {
+    try {
+      const posting = extractPosting(content);
+      return {
+        prose: posting.prose,
+        proposal: propose(content, ledger, today()),
+        proposalError: "",
+      };
+    } catch (e) {
+      let prose = content;
+      try {
+        prose = extractPosting(content).prose;
+      } catch {
+        prose = content
+          .replace(/```primeledger-postings[\s\S]*?```/gi, "")
+          .trim();
+      }
+      return {
+        prose,
+        proposal: null as Proposal | null,
+        proposalError: e instanceof Error ? e.message : String(e),
+      };
     }
   }
   async function speak(content: string) {
@@ -1577,6 +1846,7 @@ function Chat({
               setList([]);
               setRemember(false);
               setMessages([]);
+              setHandled({});
             }}
           >
             {Object.entries(providers).map(([k, v]) => (
@@ -1674,10 +1944,12 @@ function Chat({
           new releases. Not all models support text chat.
         </small>
         <section className="screenshot-panel">
-          <h3>Read a screenshot</h3>
+          <h3>Hand over a receipt</h3>
           <p>
-            Choose a receipt or payment screenshot. Only Analyze sends it to
-            your provider. Pick a vision-capable model.
+            Upload a receipt or payment screenshot, including purchases you paid
+            sales tax on. Analyze sends that image to your provider. The amount
+            it reads is the total paid, with sales tax listed separately when
+            the receipt shows it.
           </p>
           <input
             aria-label="Upload screenshot"
@@ -1719,9 +1991,9 @@ function Chat({
             </>
           )}
           <small>
-            PNG, JPEG, WebP · 4 MB maximum. Review all fields before saving. AI
-            may misread images. This sends the image even when workspace sharing
-            is off.
+            PNG, JPEG, WebP · 4 MB maximum. Review the total and any sales tax
+            before saving. This sends the image even when workspace sharing is
+            off.
           </small>
         </section>
         <label className="check-field context">
@@ -1733,9 +2005,10 @@ function Chat({
           Share workspace context with this provider
         </label>
         <small>
-          Shares yearly totals, contract details, and document titles/notes on
-          each message. Attachment contents and individual transactions are
-          excluded. Leave off to chat without records.
+          Shares yearly totals, the planning reserve, contract details, and
+          document titles/notes on each message. Attachment contents and
+          individual transactions are excluded. Leave off to chat without
+          records. Posting still matches contract names on this device.
         </small>
       </section>
       <section className="panel chat-panel">
@@ -1752,22 +2025,26 @@ function Chat({
           <button
             className="text-button"
             disabled={busy}
-            onClick={() => setMessages([])}
+            onClick={() => {
+              setMessages([]);
+              setHandled({});
+            }}
           >
             Clear chat
           </button>
         </div>
+        <ChatSnapshot ledger={ledger} year={year} />
         <div className="messages">
           {!messages.length && (
             <Empty
-              title="Let’s make sense of it together."
-              text="Ask about organizing receipts, preparing for a client conversation, or understanding your tax reserve."
+              title="Tell it what you made or bought."
+              text="Paste a payment, a split, or a purchase. The assistant proposes the ledger entries, then shows what to set aside and what you can keep."
               action={
                 <div className="prompts">
                   {[
-                    "What records should I keep as a contractor?",
-                    "Help me review a contract before signing.",
-                    "How should I organize quarterly tax payments?",
+                    "The client paid me $2,400 today for the research project.",
+                    "What should I set aside for taxes, and what can I keep?",
+                    "I spent $64.20 at the office store, including $4.20 sales tax.",
                   ].map((q) => (
                     <button key={q} onClick={() => setText(q)}>
                       {q} <ArrowRight size={14} />
@@ -1777,20 +2054,44 @@ function Chat({
               }
             />
           )}{" "}
-          {messages.map((m, i) => (
-            <article key={i} className={"message " + m.role}>
-              <small>{m.role === "user" ? "YOU" : "PRIMELEDGER"}</small>
-              <div>{m.content}</div>
-              {m.role === "assistant" && window.desktop && (
-                <button
-                  className="text-button"
-                  onClick={() => speak(m.content)}
-                >
-                  <Volume2 size={15} /> Read with eSpeak
-                </button>
-              )}
-            </article>
-          ))}
+          {messages.map((m, i) => {
+            const reply =
+              m.role === "assistant"
+                ? readReply(m.content)
+                : { prose: m.content, proposal: null, proposalError: "" };
+            return (
+              <article key={i} className={"message " + m.role}>
+                <small>{m.role === "user" ? "YOU" : "PRIMELEDGER"}</small>
+                <div>{reply.prose}</div>
+                {reply.proposal && (
+                  <PostingCard
+                    ledger={ledger}
+                    year={year}
+                    proposal={reply.proposal}
+                    busy={busy}
+                    status={handled[i]}
+                    onAdd={() => add(i, reply.proposal as Proposal)}
+                    onDismiss={() =>
+                      setHandled((h) => ({ ...h, [i]: "dismissed" }))
+                    }
+                  />
+                )}
+                {reply.proposalError && (
+                  <p role="alert" className="error">
+                    {reply.proposalError}
+                  </p>
+                )}
+                {m.role === "assistant" && window.desktop && (
+                  <button
+                    className="text-button"
+                    onClick={() => speak(reply.prose)}
+                  >
+                    <Volume2 size={15} /> Read with eSpeak
+                  </button>
+                )}
+              </article>
+            );
+          })}
           {busy && <p className="thinking">Connecting to your provider…</p>}
           <div ref={bottom} />
         </div>
@@ -1805,7 +2106,7 @@ function Chat({
             value={text}
             onChange={(e) => setText(e.target.value)}
             maxLength={12000}
-            placeholder="Ask your assistant…"
+            placeholder="Paste what you made or bought…"
             rows={2}
           />
           <button
@@ -1817,7 +2118,7 @@ function Chat({
           </button>
         </form>
         <div className="chat-footer">
-          AI can make mistakes. Verify financial and legal guidance.
+          Review a posting before adding it. The reserve is a savings estimate.
           {window.desktop && (
             <button
               className="text-button"

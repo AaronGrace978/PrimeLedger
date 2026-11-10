@@ -110,6 +110,8 @@ describe("provider protocols", () => {
     ]);
     expect(chat.url).toBe("https://ollama.com/api/chat");
     expect(chat.body).toMatchObject({ stream: false, model: "model" });
+    expect(JSON.stringify(chat.body)).toContain("primeledger-postings");
+    expect(JSON.stringify(chat.body)).toContain("Do not calculate income tax");
   });
   it("supports Anthropic and Gemini instead of assuming OpenAI format", () => {
     const a = spec(
@@ -192,6 +194,13 @@ describe("screenshot extraction", () => {
     expect(draft.date).toBe("2026-11-09");
     expect(draft.note).toContain("Date not visible");
     expect(draft).not.toHaveProperty("id");
+    expect(draft).not.toHaveProperty("salesTax");
+    const taxed = parseExtraction(
+      JSON.stringify({ ...data, date: "2026-11-09", salesTax: "2.50" }),
+      "2026-11-09",
+    );
+    expect(taxed.amount).toBe(4299);
+    expect(taxed.salesTax).toBe(250);
     for (const patch of [
       { amount: null },
       { amount: "-20" },
@@ -202,5 +211,211 @@ describe("screenshot extraction", () => {
         parseExtraction(JSON.stringify({ ...data, ...patch }), "2026-11-09"),
       ).toThrow();
     expect(() => parseExtraction("not json", "2026-11-09")).toThrow();
+  });
+});
+
+describe("posting harness", () => {
+  it("appropriates a split payment to the matching contract and an expense", async () => {
+    const { propose, withPostings } = await import("../src/harness");
+    const { snapshot } = await import("../src/tax");
+    const ledger = emptyLedger();
+    ledger.contracts = [
+      {
+        id: "c1",
+        client: "Northwind",
+        title: "Research agreement",
+        value: 500000,
+        due: "2026-12-31",
+        status: "Active",
+        note: "",
+      },
+    ];
+    const text = [
+      "Recorded the payment.",
+      "```primeledger-postings",
+      JSON.stringify({
+        summary: "Payment split between the contract and a taxed purchase.",
+        total: "50.00",
+        lines: [
+          {
+            kind: "income",
+            date: "2026-11-09",
+            name: "Research payment",
+            amount: "40.00",
+            category: "consulting",
+            contract: "Northwind",
+            salesTax: null,
+            note: "",
+          },
+          {
+            kind: "expense",
+            date: "2026-11-09",
+            name: "Office store",
+            amount: "10.00",
+            category: "Supplies",
+            contract: "",
+            salesTax: "0.80",
+            note: "receipt",
+          },
+        ],
+      }),
+      "```",
+    ].join("\n");
+    const proposal = propose(text, ledger, "2026-11-09");
+    expect(proposal?.lines[0]).toMatchObject({
+      kind: "income",
+      amount: 4000,
+      category: "Contract work",
+      contractId: "c1",
+    });
+    expect(proposal?.lines[1]).toMatchObject({
+      kind: "expense",
+      amount: 1000,
+      salesTax: 80,
+      category: "Supplies",
+      contractId: "",
+    });
+    expect(proposal?.lines[0]).not.toHaveProperty("salesTax");
+    const next = withPostings(ledger, proposal!.lines, ["a", "b"]);
+    const assumptions = { federal: 22, state: 5, paid: 0, wageBase: 0 };
+    const before = snapshot(ledger, 2026, assumptions)!;
+    const after = snapshot(next, 2026, assumptions)!;
+    expect(after.expenses).toBe(1000);
+    expect(after.profit).toBe(3000);
+    expect(after.remaining).toBeGreaterThan(before.remaining);
+    expect(after.keep).toBe(after.profit - after.remaining);
+    expect(after.keep).toBeGreaterThan(0);
+  });
+  it("rejects a bad split, wages on a contract, and sales tax above the total", async () => {
+    const { propose } = await import("../src/harness");
+    const ledger = emptyLedger();
+    ledger.contracts = [
+      {
+        id: "c1",
+        client: "Ada",
+        title: "One",
+        value: 100,
+        due: "2026-12-31",
+        status: "Active",
+        note: "",
+      },
+      {
+        id: "c2",
+        client: "Ada",
+        title: "Two",
+        value: 100,
+        due: "2026-12-31",
+        status: "Active",
+        note: "",
+      },
+    ];
+    const block = (line: unknown, total?: string) =>
+      "```primeledger-postings\n" +
+      JSON.stringify({ summary: "x", total, lines: [line] }) +
+      "\n```";
+    const income = {
+      kind: "income",
+      date: "2026-11-09",
+      name: "Pay",
+      amount: "10.00",
+      category: "Contract work",
+      contract: "",
+      note: "",
+    };
+    expect(() =>
+      propose(
+        block({ ...income, amount: "4.00" }, "10.00"),
+        ledger,
+        "2026-11-09",
+      ),
+    ).toThrow(/do not add up/);
+    expect(() =>
+      propose(
+        block({
+          ...income,
+          kind: "w2",
+          category: "Salary / wages",
+          contract: "Ada",
+        }),
+        ledger,
+        "2026-11-09",
+      ),
+    ).toThrow(/W-2/);
+    expect(() =>
+      propose(block({ ...income, contract: "Ada" }), ledger, "2026-11-09"),
+    ).toThrow(/more than one contract/);
+    expect(() =>
+      propose(
+        block({
+          kind: "expense",
+          date: "2026-11-09",
+          name: "Supplies",
+          amount: "10.00",
+          category: "Supplies",
+          salesTax: "12.00",
+          note: "",
+        }),
+        ledger,
+        "2026-11-09",
+      ),
+    ).toThrow(/cannot be larger/);
+    expect(() =>
+      propose(block({ ...income, salesTax: "1.00" }), ledger, "2026-11-09"),
+    ).toThrow(/Sales tax is recorded on a purchase/);
+    expect(propose("What should I keep?", ledger, "2026-11-09")).toBeNull();
+  });
+  it("warns when a contract is over the agreed value or the record is already saved", async () => {
+    const { propose } = await import("../src/harness");
+    const { validateLedger } = await import("../src/core");
+    const ledger = emptyLedger();
+    ledger.contracts = [
+      {
+        id: "c1",
+        client: "Northwind",
+        title: "Research agreement",
+        value: 1000,
+        due: "2026-12-31",
+        status: "Active",
+        note: "",
+      },
+    ];
+    ledger.entries = [
+      {
+        id: "e1",
+        kind: "income",
+        date: "2026-11-09",
+        name: "Research payment",
+        amount: 4000,
+        category: "Contract work",
+        contractId: "c1",
+        note: "",
+      },
+    ];
+    const text =
+      "```json\n" +
+      JSON.stringify({
+        summary: "Another research payment.",
+        lines: [
+          {
+            kind: "income",
+            date: "2026-11-09",
+            name: "Research payment",
+            amount: "40.00",
+            category: "Contract work",
+            contract: "Northwind · Research agreement",
+            note: "",
+          },
+        ],
+      }) +
+      "\n```";
+    const proposal = propose(text, ledger, "2026-11-09");
+    expect(proposal?.warnings.join(" ")).toContain("already in the ledger");
+    expect(proposal?.warnings.join(" ")).toContain("agreed value");
+    expect(proposal?.lines[0].contractId).toBe("c1");
+    const broken = {
+      ...ledger,
+      entries: [{ ...ledger.entries[0], salesTax: 50 }],
+    };
+    expect(() => validateLedger(broken)).toThrow();
   });
 });

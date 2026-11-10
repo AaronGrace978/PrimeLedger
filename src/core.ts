@@ -7,6 +7,7 @@ export type Entry = {
   category: string;
   contractId: string;
   note: string;
+  salesTax?: number;
 };
 export type Contract = {
   id: string;
@@ -54,6 +55,19 @@ export function cents(value: string): number {
     throw Error("Amount must be between $0.01 and $10 billion.");
   return n;
 }
+export function includedTax(value: string): number {
+  const v = value.trim();
+  if (!v || /^0(\.0{1,2})?$/.test(v)) return 0;
+  return cents(v);
+}
+export function isIsoDate(v: unknown): v is string {
+  return (
+    typeof v === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(v) &&
+    !Number.isNaN(Date.parse(v)) &&
+    new Date(v).toISOString().slice(0, 10) === v
+  );
+}
 export function totals(ledger: Ledger, year: number) {
   const e = ledger.entries.filter((e) => e.date.startsWith(String(year)));
   const sum = (kind: Entry["kind"]) =>
@@ -100,11 +114,13 @@ export function validateLedger(raw: unknown): Ledger {
     throw Error("Not a PrimeLedger v1 backup.");
   const str = (v: unknown, max = 10000) =>
     typeof v === "string" && v.length <= max;
-  const date = (v: unknown) =>
-    str(v, 10) &&
-    /^\d{4}-\d{2}-\d{2}$/.test(v as string) &&
-    !Number.isNaN(Date.parse(v as string)) &&
-    new Date(v as string).toISOString().slice(0, 10) === v;
+  const date = (v: unknown) => isIsoDate(v);
+  const salesTax = (e: Entry) =>
+    e.salesTax === undefined ||
+    (Number.isSafeInteger(e.salesTax) &&
+      e.salesTax >= 0 &&
+      e.salesTax <= e.amount &&
+      (e.salesTax === 0 || e.kind === "expense"));
   const amount = (v: unknown) =>
     Number.isSafeInteger(v) && Number(v) > 0 && Number(v) <= 1e12;
   const ids = new Set<string>();
@@ -126,7 +142,8 @@ export function validateLedger(raw: unknown): Ledger {
         amount(e.amount) &&
         str(e.category, 100) &&
         str(e.contractId, 100) &&
-        str(e.note),
+        str(e.note) &&
+        salesTax(e),
     )
   )
     throw Error("Invalid transaction records.");
@@ -172,13 +189,22 @@ export function csv(entries: Entry[]) {
   return (
     "\ufeff" +
     [
-      ["Date", "Type", "Description", "Category", "Amount USD", "Notes"],
+      [
+        "Date",
+        "Type",
+        "Description",
+        "Category",
+        "Amount USD",
+        "Sales tax USD",
+        "Notes",
+      ],
       ...entries.map((e) => [
         e.date,
         e.kind,
         e.name,
         e.category,
         (e.amount / 100).toFixed(2),
+        ((e.salesTax || 0) / 100).toFixed(2),
         e.note,
       ]),
     ]

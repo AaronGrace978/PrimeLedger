@@ -154,6 +154,7 @@ test("screenshots require explicit analysis and review before saving", async ({
             amount: "18.25",
             category: "Supplies",
             note: "Please verify the total.",
+            salesTax: "1.25",
           }),
         },
       },
@@ -164,6 +165,7 @@ test("screenshots require explicit analysis and review before saving", async ({
   await page.getByRole("button", { name: "Analyze & review" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByLabel("Amount (USD)")).toHaveValue("18.25");
+  await expect(page.getByLabel("Sales tax included (USD)")).toHaveValue("1.25");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await go(page, "Documents");
   await expect(page.getByText("0 documents")).toBeVisible();
@@ -176,9 +178,106 @@ test("screenshots require explicit analysis and review before saving", async ({
   await page.getByRole("button", { name: "Save record" }).click();
   await go(page, "Transactions");
   await expect(page.getByText("−$19.50", { exact: true })).toBeVisible();
+  await expect(page.getByText("incl. $1.25 sales tax")).toBeVisible();
   await go(page, "Documents");
   await expect(
     page.getByText("Office supplies receipt · screenshot", { exact: true }),
   ).toBeVisible();
   expect(calls).toBe(2);
 });
+
+test("chat income is appropriated, explained, and saved only after confirmation", async ({
+  page,
+}) => {
+  const year = new Date().getFullYear();
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "primeledger.tax",
+      JSON.stringify({ federal: 22, state: 5, paid: 0, wageBase: 18450000 }),
+    );
+  });
+  await page.goto("/");
+  await go(page, "Contracts");
+  await page.getByRole("button", { name: "Add contract" }).click();
+  await page.getByLabel("Project / agreement title").fill("Research agreement");
+  await page.getByLabel("Client", { exact: true }).fill("Northwind");
+  await page.getByLabel("Agreed value (USD)").fill("5000");
+  await page.getByRole("button", { name: "Save record" }).click();
+  await go(page, "AI assistant");
+  await page.getByLabel("API key", { exact: true }).fill("posting-test-key");
+  await page.getByLabel("Model ID").fill("posting-test");
+  await page.route("https://ollama.com/api/chat", async (route) => {
+    const body = route.request().postDataJSON();
+    expect(JSON.stringify(body)).toContain("primeledger-postings");
+    expect(JSON.stringify(body)).not.toContain("Research agreement");
+    await route.fulfill({
+      json: {
+        message: {
+          content: [
+            "I appropriated this to the Northwind agreement.",
+            "```primeledger-postings",
+            JSON.stringify({
+              summary:
+                "Northwind payment appropriated to the research agreement.",
+              lines: [
+                {
+                  kind: "income",
+                  date: `${year}-11-09`,
+                  name: "Research payment",
+                  amount: "2400.00",
+                  category: "Contract work",
+                  contract: "Northwind",
+                  salesTax: null,
+                  note: "",
+                },
+              ],
+            }),
+            "```",
+          ].join("\n"),
+        },
+      },
+    });
+  });
+  await page
+    .getByRole("textbox", { name: "Message", exact: true })
+    .fill("Northwind paid me 2400 for research");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(
+    page.getByText("Northwind payment appropriated to the research agreement."),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Research payment", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Northwind · Research agreement")).toBeVisible();
+  await expect(page.locator(".chat-snapshot")).toContainText("Set aside");
+  await expect(page.locator(".reserve-note")).toContainText("keep");
+  const before = await entryCount(page);
+  expect(before).toBe(0);
+  await page.getByRole("button", { name: "Add to ledger" }).click();
+  await expect(page.locator(".posting")).toContainText("Added to your ledger.");
+  expect(await entryCount(page)).toBe(1);
+  await go(page, "Transactions");
+  await expect(
+    page.getByText("Research payment", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("+$2,400.00", { exact: true })).toBeVisible();
+});
+
+async function entryCount(page: Page) {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve) => {
+        const req = indexedDB.open("primeledger");
+        req.onerror = () => resolve(-1);
+        req.onsuccess = () => {
+          const db = req.result;
+          const get = db
+            .transaction("workspace", "readonly")
+            .objectStore("workspace")
+            .get("ledger");
+          get.onsuccess = () => resolve(get.result?.entries?.length ?? 0);
+          get.onerror = () => resolve(-1);
+        };
+      }),
+  );
+}
